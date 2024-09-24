@@ -9,6 +9,7 @@
     "declaration": true,
     "strict": true,
     "noImplicitAny": true,
+    "esModuleInterop": true,
     "strictNullChecks": true,
     "noImplicitThis": true,
     "alwaysStrict": true,
@@ -22,8 +23,11 @@
     "strictPropertyInitialization": false,
     "typeRoots": [
       "./node_modules/@types"
-    ]
+    ],
   },
+  "include": [
+    "lambda-fns/"
+  ],
   "exclude": [
     "node_modules",
     "cdk.out"

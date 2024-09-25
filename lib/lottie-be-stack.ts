@@ -1,11 +1,12 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { Duration } from "aws-cdk-lib"
+import { Duration, Size } from "aws-cdk-lib"
 import * as lambda from "aws-cdk-lib/aws-lambda"
 import * as iam from "aws-cdk-lib/aws-iam"
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { NodejsFunction, NodejsFunctionProps } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigwv2  from 'aws-cdk-lib/aws-apigatewayv2';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 
 const stage = process.env.STAGE !== "production" ? "-staging" : ""
 
@@ -14,6 +15,18 @@ export class LottieBeStack extends cdk.Stack {
     super(scope, id, props);
 
     // The code that defines your stack goes here
+
+    const bucket = new s3.Bucket(this, 'LottieBucket', {
+      bucketName: 'lottie-bucket',
+      blockPublicAccess: {
+        blockPublicAcls: false,
+        blockPublicPolicy: false,
+        ignorePublicAcls: false,
+        restrictPublicBuckets: false,
+      },
+      publicReadAccess: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
 
     const chromeLayer = new lambda.LayerVersion(
         this,
@@ -25,10 +38,21 @@ export class LottieBeStack extends cdk.Stack {
         }
     )
 
+    const ffmpegLayer = new lambda.LayerVersion(
+        this,
+        `ffmpeg-layer${stage}`,
+        {
+          compatibleRuntimes: [lambda.Runtime.NODEJS_20_X],
+          code: lambda.Code.fromAsset("ffmpeg.zip"),
+          description: "FFMPEG layer",
+        }
+    )
+
     const nodeJsFunctionProps: NodejsFunctionProps = {
       runtime: lambda.Runtime.NODEJS_20_X,
-      memorySize: 1024,
-      timeout: Duration.minutes(3),
+      memorySize: 3008,
+      timeout: Duration.minutes(15),
+      layers: [chromeLayer, ffmpegLayer],
       environment: {
         REGION: "eu-west-1",
       },
@@ -36,13 +60,17 @@ export class LottieBeStack extends cdk.Stack {
         externalModules: [
           'aws-sdk'
         ],
-        nodeModules: ["@sparticuz/chromium", "puppeteer-core", "puppeteer"],
+        nodeModules: [
+          "@sparticuz/chromium",
+          "lottie-web"
+        ],
       },
     }
 
     const mainLambda = new NodejsFunction(this, `LottieHandler${stage}`, {
       functionName: "screenshotFn",
       entry: "./lambda-fns/main.ts",
+      ephemeralStorageSize:  Size.mebibytes(1024),
       ...nodeJsFunctionProps
     })
 
@@ -51,14 +79,31 @@ export class LottieBeStack extends cdk.Stack {
       ...nodeJsFunctionProps
     })
 
+    const callLambda = new NodejsFunction(this, `CallHandler${stage}`, {
+      functionName: "callHandler",
+      entry: "./lambda-fns/callHandler.ts",
+      ...nodeJsFunctionProps
+    })
+
     const s3Policy = new iam.PolicyStatement({
       actions: ["s3:*"],
-      resources: ["arn:aws:s3:::*"],
+      resources: [bucket.arnForObjects('*')]
     })
 
     mainLambda.role?.attachInlinePolicy(
         new iam.Policy(this, `s3-policy${stage}`, {
           statements: [s3Policy],
+        })
+    )
+
+    const invokePolicy = new iam.PolicyStatement({
+      actions: ["lambda:*"],
+      resources: [mainLambda.functionArn]
+    })
+
+    callLambda.role?.attachInlinePolicy(
+        new iam.Policy(this, `invoke-policy${stage}`, {
+          statements: [invokePolicy],
         })
     )
 
@@ -85,7 +130,7 @@ export class LottieBeStack extends cdk.Stack {
       },
     });
 
-    const lottieLambdaIntegration = new HttpLambdaIntegration('LottieIntegration', mainLambda);
+    const lottieLambdaIntegration = new HttpLambdaIntegration('LottieIntegration', callLambda);
     const lottieTestLambdaIntegration = new HttpLambdaIntegration('LottieTestIntegration', testLambda);
 
     httpApi.addRoutes({
